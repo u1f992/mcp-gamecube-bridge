@@ -57,9 +57,10 @@ pygame.camera.init(_get_camera_backend())
 ser: serial.Serial | None = None
 PORTS = [port.device for port in serial.tools.list_ports.comports()]
 
-cam: pygame.camera.Camera | None = None
 CAMERAS = pygame.camera.list_cameras()
-cam_ready = threading.Event()
+image_ready = threading.Event()
+shared_size: tuple[int, int] | None = None
+shared_image: bytes | None = None
 
 
 def _remap_m1_to_1_to_0_255(n: float):
@@ -197,15 +198,17 @@ def send_gamecube_controller_input(
         )
     time.sleep(max(0, wait_time))
 
-    if cam is not None:
-        cam_ready.wait()
-        cam_ready.clear()
-        pygame_image = cam.get_image()
-        cam_ready.set()
-        raw_bytes = pygame.image.tobytes(pygame_image, "RGB")
-        pil_image = PIL.Image.frombytes("RGB", pygame_image.get_size(), raw_bytes)
-    else:
-        pil_image = PIL.Image.new("RGB", (640, 480), (0, 0, 0))
+    image_ready.wait()
+    image_ready.clear()
+    try:
+        if shared_size is not None and shared_image is not None:
+            pil_image = PIL.Image.frombytes("RGB", shared_size, shared_image)
+        else:
+            pil_image = PIL.Image.new(
+                "RGB", shared_size if shared_size is not None else (640, 480), (0, 0, 0)
+            )
+    finally:
+        image_ready.set()
 
     # https://github.com/jlowin/fastmcp?tab=readme-ov-file#images
     buffer = io.BytesIO()
@@ -213,17 +216,27 @@ def send_gamecube_controller_input(
     return fastmcp.Image(data=buffer.getvalue(), format="png")
 
 
-def _thread_cam_get_image():
+def _thread_cam_get_image(camera: str, skip_frames: int):
+    global shared_image, shared_size
+
+    cam = pygame.camera.Camera(camera)
+    cam.start()
+
+    # Some inexpensive cameras return a test pattern for a few seconds after connection
+    for _ in range(skip_frames):
+        cam.get_image()
+
     while True:
+        image_ready.wait()
+        image_ready.clear()
         try:
-            if cam is not None:
-                cam_ready.wait()
-                cam_ready.clear()
-                cam.get_image()
-                cam_ready.set()
+            image = cam.get_image()
+            shared_size = image.get_size()
+            shared_image = pygame.image.tobytes(image, "RGB")
         except:  # noqa: E722
             pass
-        time.sleep(1 / 120)
+        finally:
+            image_ready.set()
 
 
 if __name__ == "__main__":
@@ -240,13 +253,10 @@ if __name__ == "__main__":
         exit(0)
 
     ser = serial.Serial(args.serial_port)
-    cam = pygame.camera.Camera(args.camera)
-    cam.start()
 
-    # Some inexpensive cameras return a test pattern for a few seconds after connection
-    for _ in range(args.skip_frames):
-        cam.get_image()
-    cam_ready.set()
-    threading.Thread(target=_thread_cam_get_image).start()
+    image_ready.set()
+    threading.Thread(
+        target=_thread_cam_get_image, args=(args.camera, args.skip_frames)
+    ).start()
 
     mcp.run()
