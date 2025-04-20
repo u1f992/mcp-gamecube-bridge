@@ -17,6 +17,8 @@ import argparse
 import contextlib
 import io
 import platform
+import signal
+import sys
 import threading
 import time
 import typing
@@ -36,6 +38,10 @@ import serial
 mcp = fastmcp.FastMCP("GameCubeBridge")
 
 
+def sigterm_handler():
+    sys.exit(1)
+
+
 def _get_camera_backend():
     """
     https://www.pygame.org/docs/ref/camera.html#pygame.camera.get_backends
@@ -51,13 +57,19 @@ def _get_camera_backend():
         raise NotImplementedError(f"{pl} is not supported.")
 
 
-pygame.init()
-pygame.camera.init(_get_camera_backend())
+def _get_list_cameras():
+    pygame.init()
+    pygame.camera.init(_get_camera_backend())
+    ret = pygame.camera.list_cameras()
+    pygame.camera.quit()
+    pygame.quit()
+    return ret
+
 
 ser: serial.Serial | None = None
 PORTS = [port.device for port in serial.tools.list_ports.comports()]
 
-CAMERAS = pygame.camera.list_cameras()
+CAMERAS = _get_list_cameras()
 image_ready = threading.Event()
 shared_size: tuple[int, int] | None = None
 shared_image: bytes | None = None
@@ -219,6 +231,8 @@ def send_gamecube_controller_input(
 def _thread_cam_get_image(camera: str, skip_frames: int):
     global shared_image, shared_size
 
+    pygame.init()
+    pygame.camera.init(_get_camera_backend())
     cam = pygame.camera.Camera(camera)
     cam.start()
 
@@ -226,20 +240,47 @@ def _thread_cam_get_image(camera: str, skip_frames: int):
     for _ in range(skip_frames):
         cam.get_image()
 
-    while True:
-        image_ready.wait()
-        image_ready.clear()
-        try:
-            image = cam.get_image()
-            shared_size = image.get_size()
-            shared_image = pygame.image.tobytes(image, "RGB")
-        except:  # noqa: E722
-            pass
-        finally:
-            image_ready.set()
+    screen = pygame.display.set_mode(cam.get_image().get_size())
+    pygame.display.set_caption("mcp-gamecube-bridge")
+
+    first = True
+
+    try:
+        while True:
+            pygame.event.get()
+
+            if first:
+                first = False
+            else:
+                image_ready.wait()
+            image_ready.clear()
+            try:
+                image = cam.get_image()
+                shared_size = image.get_size()
+                shared_image = pygame.image.tobytes(image, "RGB")
+
+                screen.blit(image, image.get_rect())
+                pygame.display.update()
+            except:  # noqa: E722
+                pass
+            finally:
+                image_ready.set()
+    finally:
+        # https://qiita.com/mihyon/items/f536002791671c6238e3
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+
+        cam.stop()
+        pygame.camera.quit()
+        pygame.quit()
+
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
 
 
-if __name__ == "__main__":
+def main():
+    global ser
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--serial-port", type=str)
     parser.add_argument("--camera", type=str)
@@ -254,9 +295,15 @@ if __name__ == "__main__":
 
     ser = serial.Serial(args.serial_port)
 
-    image_ready.set()
+    # https://qiita.com/mihyon/items/f536002791671c6238e3
+    signal.signal(signal.SIGTERM, sigterm_handler)
+
     threading.Thread(
-        target=_thread_cam_get_image, args=(args.camera, args.skip_frames)
+        target=_thread_cam_get_image, args=(args.camera, args.skip_frames), daemon=True
     ).start()
 
     mcp.run()
+
+
+if __name__ == "__main__":
+    main()
