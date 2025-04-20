@@ -66,27 +66,30 @@ def _remap_m1_to_1_to_0_255(n: float):
     return max(0, min(255, int(round((n + 1) * 127.5))))
 
 
-def _send(
+_ControlPad = (
+    typing.Literal["up"]
+    | typing.Literal["up_right"]
+    | typing.Literal["right"]
+    | typing.Literal["down_right"]
+    | typing.Literal["down"]
+    | typing.Literal["down_left"]
+    | typing.Literal["left"]
+    | typing.Literal["up_left"]
+    | typing.Literal["neutral"]
+)
+
+
+def _send_gamecube_controller_input(
     ser: serial.Serial,
     a: bool,
     b: bool,
     x: bool,
     y: bool,
-    l: bool,
+    l: bool,  # noqa: E741
     r: bool,
     z: bool,
     start_pause: bool,
-    control_pad: (
-        typing.Literal["up"]
-        | typing.Literal["up_right"]
-        | typing.Literal["right"]
-        | typing.Literal["down_right"]
-        | typing.Literal["down"]
-        | typing.Literal["down_left"]
-        | typing.Literal["left"]
-        | typing.Literal["up_left"]
-        | typing.Literal["neutral"]
-    ),
+    control_pad: _ControlPad,
     control_stick: tuple[float, float],
     c_stick: tuple[float, float],
     reset: bool,
@@ -142,26 +145,16 @@ def _send(
 
 
 @mcp.tool()
-def send_controller_input(
+def send_gamecube_controller_input(
     a: bool = False,
     b: bool = False,
     x: bool = False,
     y: bool = False,
-    l: bool = False,
+    l: bool = False,  # noqa: E741
     r: bool = False,
     z: bool = False,
     start_pause: bool = False,
-    control_pad: (
-        typing.Literal["up"]
-        | typing.Literal["up_right"]
-        | typing.Literal["right"]
-        | typing.Literal["down_right"]
-        | typing.Literal["down"]
-        | typing.Literal["down_left"]
-        | typing.Literal["left"]
-        | typing.Literal["up_left"]
-        | typing.Literal["neutral"]
-    ) = "neutral",
+    control_pad: _ControlPad = "neutral",
     control_stick: tuple[float, float] = (0, 0),
     c_stick: tuple[float, float] = (0, 0),
     reset: bool = False,
@@ -169,7 +162,7 @@ def send_controller_input(
     wait_time: float = 0.0,
 ):
     if ser is not None:
-        _send(
+        _send_gamecube_controller_input(
             ser,
             a,
             b,
@@ -187,7 +180,7 @@ def send_controller_input(
     time.sleep(max(0, hold_time))
 
     if ser is not None:
-        _send(
+        _send_gamecube_controller_input(
             ser,
             False,
             False,
