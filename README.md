@@ -1,5 +1,7 @@
 # mcp-gamecube-bridge
 
+[MCP](https://modelcontextprotocol.io/) bridge of [Jiangtun](https://github.com/u1f992/jiangtun). Grant Nintendo Gamecube operation functionality to clients.
+
 ```
 $ uv venv
 $ uv sync
@@ -19,4 +21,23 @@ available ports:
 
 available cameras:
   ['/dev/video0', '/dev/video1', '/dev/video2', '/dev/video3', '/dev/video12', '/dev/video13']
+```
+
+##### claude_desktop_config.json
+
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "/home/u1f992/Documents/mcp-gamecube-bridge/.venv/bin/python",
+      "args": [
+        "/home/u1f992/Documents/mcp-gamecube-bridge/main.py",
+        "--serial-port",
+        "/dev/ttyACM0",
+        "--camera",
+        "/dev/video8"
+      ]
+    }
+  }
+}
 ```
