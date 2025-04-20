@@ -2,6 +2,8 @@
 
 [MCP](https://modelcontextprotocol.io/) bridge of [Jiangtun](https://github.com/u1f992/jiangtun). Grant Nintendo GameCube operation functionality to clients.
 
+![](./screenshot.png)
+
 ```
 $ uv venv
 $ uv sync
