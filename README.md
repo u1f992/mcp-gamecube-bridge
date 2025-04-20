@@ -1,6 +1,6 @@
 # mcp-gamecube-bridge
 
-[MCP](https://modelcontextprotocol.io/) bridge of [Jiangtun](https://github.com/u1f992/jiangtun). Grant Nintendo Gamecube operation functionality to clients.
+[MCP](https://modelcontextprotocol.io/) bridge of [Jiangtun](https://github.com/u1f992/jiangtun). Grant Nintendo GameCube operation functionality to clients.
 
 ```
 $ uv venv

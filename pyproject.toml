@@ -1,7 +1,7 @@
 [project]
 name = "mcp-gamecube-bridge"
 version = "0.1.0"
-description = "Add your description here"
+description = "MCP bridge of Jiangtun. Grant Nintendo GameCube operation functionality to clients."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
