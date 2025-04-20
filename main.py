@@ -14,12 +14,14 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import argparse
+import atexit
 import contextlib
+import ctypes
 import io
+import multiprocessing
+import multiprocessing.synchronize
+import multiprocessing.sharedctypes
 import platform
-import signal
-import sys
-import threading
 import time
 import typing
 
@@ -36,10 +38,6 @@ import pygame.image
 import serial
 
 mcp = fastmcp.FastMCP("GameCubeBridge")
-
-
-def sigterm_handler():
-    sys.exit(1)
 
 
 def _get_camera_backend():
@@ -64,15 +62,6 @@ def _get_list_cameras():
     pygame.camera.quit()
     pygame.quit()
     return ret
-
-
-ser: serial.Serial | None = None
-PORTS = [port.device for port in serial.tools.list_ports.comports()]
-
-CAMERAS = _get_list_cameras()
-image_ready = threading.Event()
-shared_size: tuple[int, int] | None = None
-shared_image: bytes | None = None
 
 
 def _remap_m1_to_1_to_0_255(n: float):
@@ -150,143 +139,59 @@ def _send_gamecube_controller_input(
     else:
         byte3 = 8
     byte4 = _remap_m1_to_1_to_0_255(control_stick[0])
-    byte5 = _remap_m1_to_1_to_0_255(control_stick[1])
+    byte5 = 255 - _remap_m1_to_1_to_0_255(control_stick[1])
     byte6 = _remap_m1_to_1_to_0_255(c_stick[0])
-    byte7 = _remap_m1_to_1_to_0_255(c_stick[1])
+    byte7 = 255 - _remap_m1_to_1_to_0_255(c_stick[1])
 
     ser.write([byte0, byte1, byte2, byte3, byte4, byte5, byte6, byte7, 0, 0, 0])
 
 
-@mcp.tool()
-def send_gamecube_controller_input(
-    a: bool = False,
-    b: bool = False,
-    x: bool = False,
-    y: bool = False,
-    l: bool = False,  # noqa: E741
-    r: bool = False,
-    z: bool = False,
-    start_pause: bool = False,
-    control_pad: _ControlPad = "neutral",
-    control_stick: tuple[float, float] = (0, 0),
-    c_stick: tuple[float, float] = (0, 0),
-    reset: bool = False,
-    hold_time: float = 0.0,
-    wait_time: float = 0.0,
+def _process(
+    camera: str,
+    buffer: ctypes.Array[ctypes.c_uint8],
+    ready: multiprocessing.synchronize.Event,
+    cancel: multiprocessing.synchronize.Event,
 ):
-    if ser is not None:
-        _send_gamecube_controller_input(
-            ser,
-            a,
-            b,
-            x,
-            y,
-            l,
-            r,
-            z,
-            start_pause,
-            control_pad,
-            control_stick,
-            c_stick,
-            reset,
-        )
-    time.sleep(max(0, hold_time))
-
-    if ser is not None:
-        _send_gamecube_controller_input(
-            ser,
-            False,
-            False,
-            False,
-            False,
-            False,
-            False,
-            False,
-            False,
-            "neutral",
-            (0, 0),
-            (0, 0),
-            False,
-        )
-    time.sleep(max(0, wait_time))
-
-    image_ready.wait()
-    image_ready.clear()
-    try:
-        if shared_size is not None and shared_image is not None:
-            pil_image = PIL.Image.frombytes("RGB", shared_size, shared_image)
-        else:
-            pil_image = PIL.Image.new(
-                "RGB", shared_size if shared_size is not None else (640, 480), (0, 0, 0)
-            )
-    finally:
-        image_ready.set()
-
-    # https://github.com/jlowin/fastmcp?tab=readme-ov-file#images
-    buffer = io.BytesIO()
-    pil_image.save(buffer, format="PNG")
-    return fastmcp.Image(data=buffer.getvalue(), format="png")
-
-
-def _thread_cam_get_image(camera: str, skip_frames: int):
-    global shared_image, shared_size
-
     pygame.init()
     pygame.camera.init(_get_camera_backend())
+    
+    atexit.register(pygame.camera.quit)
+    atexit.register(pygame.quit)
+    
     cam = pygame.camera.Camera(camera)
     cam.start()
-
-    # Some inexpensive cameras return a test pattern for a few seconds after connection
-    for _ in range(skip_frames):
-        cam.get_image()
-
-    screen = pygame.display.set_mode(cam.get_image().get_size())
-    pygame.display.set_caption("mcp-gamecube-bridge")
 
     first = True
 
     try:
-        while True:
-            pygame.event.get()
-
+        while not cancel.is_set():
+            image = cam.get_image()
             if first:
                 first = False
-            else:
-                image_ready.wait()
-            image_ready.clear()
+            elif not ready.wait(timeout=1):
+                raise TimeoutError("_process: ready.wait")
+            ready.clear()
             try:
-                image = cam.get_image()
-                shared_size = image.get_size()
-                shared_image = pygame.image.tobytes(image, "RGB")
-
-                screen.blit(image, image.get_rect())
-                pygame.display.update()
-            except:  # noqa: E722
-                pass
+                memoryview(buffer).cast("B")[:] = memoryview(
+                    pygame.image.tobytes(image, "RGB")
+                ).cast("B")[:]
             finally:
-                image_ready.set()
+                ready.set()
     finally:
-        # https://qiita.com/mihyon/items/f536002791671c6238e3
-        signal.signal(signal.SIGTERM, signal.SIG_IGN)
-        signal.signal(signal.SIGINT, signal.SIG_IGN)
-
         cam.stop()
         pygame.camera.quit()
         pygame.quit()
 
-        signal.signal(signal.SIGTERM, signal.SIG_DFL)
-        signal.signal(signal.SIGINT, signal.SIG_DFL)
-
 
 def main():
-    global ser
-
     parser = argparse.ArgumentParser()
     parser.add_argument("--serial-port", type=str)
     parser.add_argument("--camera", type=str)
-    parser.add_argument("--skip-frames", type=int, default=0)
-    parser.add_argument_group("available ports", f"{PORTS}")
-    parser.add_argument_group("available cameras", f"{CAMERAS}")
+    parser.add_argument_group(
+        "available ports",
+        f"{[port.device for port in serial.tools.list_ports.comports()]}",
+    )
+    parser.add_argument_group("available cameras", f"{_get_list_cameras()}")
     args = parser.parse_args()
 
     if args.serial_port is None or args.camera is None:
@@ -295,14 +200,98 @@ def main():
 
     ser = serial.Serial(args.serial_port)
 
-    # https://qiita.com/mihyon/items/f536002791671c6238e3
-    signal.signal(signal.SIGTERM, sigterm_handler)
+    pygame.init()
+    pygame.camera.init(_get_camera_backend())
+    cam = pygame.camera.Camera(args.camera)
+    cam.start()
+    image = cam.get_image()
+    image_size = image.get_size()
+    buffer_size = len(pygame.image.tobytes(image, "RGB"))
+    cam.stop()
+    pygame.camera.quit()
+    pygame.quit()
 
-    threading.Thread(
-        target=_thread_cam_get_image, args=(args.camera, args.skip_frames), daemon=True
-    ).start()
+    with multiprocessing.Manager() as manager:
+        buffer = multiprocessing.sharedctypes.RawArray(ctypes.c_uint8, buffer_size)
+        image_buffer = buffer
+        ready = manager.Event()
+        cancel = manager.Event()
+        process = multiprocessing.Process(
+            target=_process, args=(args.camera, buffer, ready, cancel), daemon=True
+        )
+        process.start()
 
-    mcp.run()
+        @mcp.tool()
+        def send_gamecube_controller_input(
+            a: bool = False,
+            b: bool = False,
+            x: bool = False,
+            y: bool = False,
+            l: bool = False,  # noqa: E741
+            r: bool = False,
+            z: bool = False,
+            start_pause: bool = False,
+            control_pad: _ControlPad = "neutral",
+            control_stick: tuple[float, float] = (0, 0),
+            c_stick: tuple[float, float] = (0, 0),
+            reset: bool = False,
+            hold_time: float = 0.0,
+            wait_time: float = 0.0,
+        ):
+            _send_gamecube_controller_input(
+                ser,
+                a,
+                b,
+                x,
+                y,
+                l,
+                r,
+                z,
+                start_pause,
+                control_pad,
+                control_stick,
+                c_stick,
+                reset,
+            )
+            time.sleep(max(0, hold_time))
+
+            _send_gamecube_controller_input(
+                ser,
+                False,
+                False,
+                False,
+                False,
+                False,
+                False,
+                False,
+                False,
+                "neutral",
+                (0, 0),
+                (0, 0),
+                False,
+            )
+            time.sleep(max(0, wait_time))
+
+            if not ready.wait(timeout=1):
+                raise TimeoutError("send_gamecube_controller_input: ready.wait")
+            ready.clear()
+            try:
+                pil_image = PIL.Image.frombytes(
+                    "RGB", image_size, memoryview(image_buffer).cast("B")
+                )
+            finally:
+                ready.set()
+
+            # https://github.com/jlowin/fastmcp?tab=readme-ov-file#images
+            buffer = io.BytesIO()
+            pil_image.save(buffer, format="PNG")
+            return fastmcp.Image(data=buffer.getvalue(), format="png")
+
+        try:
+            mcp.run()
+        finally:
+            cancel.set()
+            process.join()
 
 
 if __name__ == "__main__":
